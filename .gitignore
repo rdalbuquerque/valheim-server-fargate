@@ -1,0 +1,5 @@
+.terraform
+state
+*.db
+*.fwl
+*.pem
