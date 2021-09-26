@@ -70,7 +70,7 @@ resource "aws_instance" "web" {
 }
 ```
 Configures EC2 instance that will host Valheim server. Somethings to notice:
-* ami attribute: This Id is for the ubuntu 20.04 image on sa-east-1 region. Each region will have it's on AMI Id's
+* ami attribute: This Id is for the ubuntu 20.04 image on sa-east-1 region. Each region has it's on AMI Id's
 * instance_type attribute: I Tried to host with t2.micro, no chance. t2.small was able to start a fresh server but once I uploaded my own it couldn't load everything up. t2.medium ran my server with 3 players for a couple of hours without any hickups and stable cpu usage at around 20%.
 
 ```hcl
@@ -98,8 +98,8 @@ resource "null_resource" "valheim_deploy" {
 }
 ```
 This block is the last mile setup for the server.  
-The ``deploy-valheim.sh`` script is responsible for installing Docker and Docker Compose and initiating the server with ``sudo docker-compose up -d`` command. It also configures the crontab to run the Docker Compose command on reboot.  
-The ``docker-compose.yml`` is a copy paste from [this](https://updateloop.dev/dedicated-valheim-lightsail/) tutorial and there is a lot more info in the [image repo on github](https://github.com/mbround18/valheim-docker).
+The [``deploy-valheim.sh``](deploy/deploy-valheim.sh) script is responsible for installing Docker and Docker Compose and initiating the server with ``sudo docker-compose up -d`` command. It also configures the crontab to run the Docker Compose command on reboot.  
+The [``docker-compose.yml``](deploy/docker-compose.yml) is a copy paste from [this](https://updateloop.dev/dedicated-valheim-lightsail/) tutorial and there is a lot more info in the [image repo on Github](https://github.com/mbround18/valheim-docker).
 
 ### Github Action secrets
 ```hcl
@@ -124,10 +124,10 @@ resource "github_actions_secret" "aws_ec2_instance_id" {
 This secrets are used in the workflow to stop and start the server.
 
 ### The workflows
-Since the server I was creating was not intended to be a public 24/7 server, the solution I came up with was to use Github Actions to start/stop the instance, keeping AWS costs as low as possible. This is all they do. The ``start-server.yml`` is intended to be manually triggered by the first person who needs the server. The ``stop-server.yml`` can also be manually triggered but is also scheduled to run everyday at 3 AM (UTC - 3) in case someone forgets to shut the server down.
+Since the server I was creating was not intended to be a public 24/7 server, the solution I came up with was to use Github Actions to start/stop the instance, keeping AWS costs as low as possible. This is all they do. The [``start-server.yml``](.github/workflows/start-server.yml) is intended to be manually triggered by the first person who needs the server. The [``stop-server.yml``](.github/workflows/stop-server.yml) can also be manually triggered but is also scheduled to run everyday at 3 AM (UTC - 3) in case someone forgets to shut the server down.
 
 ### Disclaimer
-This was done in a day so there are probably much better ways to run, both more robust and cheaper, Valheim servers.
+This was done in a day out of curiosity, so there are probably much better ways to run, both more robust and cheaper, Valheim servers.
 
 
 
