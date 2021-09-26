@@ -72,6 +72,7 @@ resource "aws_instance" "web" {
 Configures EC2 instance that will host Valheim server. Somethings to notice:
 * ami attribute: This Id is for the ubuntu 20.04 image on sa-east-1 region. Each region has it's on AMI Id's
 * instance_type attribute: I Tried to host with t2.micro, no chance. t2.small was able to start a fresh server but once I uploaded my own it couldn't load everything up. t2.medium ran my server with 3 players for a couple of hours without any hickups and stable cpu usage at around 20%.
+* provisioner block: since we will be doing last mile configurations sshing to the newly created instance we need a way to know that the instance is ready to receive the connection. With this provisioner block the aws_instance resource will only be considered created once the remote connection is successful.
 
 ```hcl
 resource "null_resource" "valheim_deploy" {
@@ -126,8 +127,9 @@ This secrets are used in the workflow to stop and start the server.
 ### The workflows
 Since the server I was creating was not intended to be a public 24/7 server, the solution I came up with was to use Github Actions to start/stop the instance, keeping AWS costs as low as possible. This is all they do. The [``start-server.yml``](.github/workflows/start-server.yml) is intended to be manually triggered by the first person who needs the server. The [``stop-server.yml``](.github/workflows/stop-server.yml) can also be manually triggered but is also scheduled to run everyday at 3 AM (UTC - 3) in case someone forgets to shut the server down.
 
-### Disclaimer
-This was done in a day out of curiosity, so there are probably much better ways to run, both more robust and cheaper, Valheim servers.
+### Disclaimers
+* The EC2 instance holds the state of your world, so if you delete it, you will lose your world if it's not backed up somewhere outside the instance. This repo does not cover this part yet. A possibility would be mouting an S3 bucket in the container worlds folder through s3fs volume plugin like [REX-Ray](https://github.com/rexray/rexray).
+* This was done in a day out of curiosity, so there are probably much better ways to run, both more robust and cheaper, Valheim servers.
 
 
 
