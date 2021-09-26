@@ -20,4 +20,4 @@ jobs:
 
     - name: aws ec2 stop-instances
       run: |
-        aws ec2 stop-instances --instance-ids ${{ secrets.instace_id }}
+        aws ec2 stop-instances --instance-ids ${{ secrets.INSTANCE_ID }}
