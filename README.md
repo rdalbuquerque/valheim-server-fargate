@@ -1,135 +1,267 @@
 # Valheim server setup
-### Credits
+- [Valheim server setup](#valheim-server-setup)
+    - [The credits](#the-credits)
+    - [The goal](#the-goal)
+    - [The pre-requisites](#the-pre-requisites)
+    - [The provider auth](#the-provider-auth)
+    - [The network config](#the-network-config)
+    - [The locals](#the-locals)
+    - [The data layer](#the-data-layer)
+    - [The ECS](#the-ecs)
+      - [cluster](#cluster)
+      - [service and task](#service-and-task)
+    - [The role](#the-role)
+    - [The Conclusion](#the-conclusion)
+
+
+### The credits
 This repository is based on [this](https://updateloop.dev/dedicated-valheim-lightsail/) tutorial and uses [this](https://github.com/mbround18/valheim-docker) image to host the server with Docker.
 
-### Goal
+### The goal
 The goal here is to facilitate the creation and management of the server.
 
-### Pre-requisites
+### The pre-requisites
 * Terraform
-* Github account to manage Actions
 * AWS account
-* Pre-generated EC2 Key Pair named ``valheim``
 
-### Providers autentication
+### The provider auth
 The AWS and Github providers uses the following environment variables for authentication:
 * AWS:
     * AWS_ACCESS_KEY_ID
     * AWS_SECRET_ACCESS_KEY
     * AWS_DEFAULT_REGION 
-* Github:
-    * GITHUB_TOKEN
 
-## ``main.tf``
+### The network config
 Network configuration:
 ```hcl
-resource "aws_security_group_rule" "valheim" {
-  type              = "ingress"
-  from_port         = 2456 # Port range for Valheim
-  to_port           = 2458
-  protocol          = "udp"
-  cidr_blocks       = ["0.0.0.0/0"]
-  ipv6_cidr_blocks  = []
-  security_group_id = "sg-35035942" # My default sg
-}
-```
-Configures the ingress udp ports for Valheim server communication
-```hcl
-resource "aws_security_group_rule" "ssh" {
-  type              = "ingress"
-  from_port         = 22
-  to_port           = 22
-  protocol          = "tcp"
-  cidr_blocks       = ["0.0.0.0/0"] # Ideally the server admin ip or ip range
-  ipv6_cidr_blocks  = []
-  security_group_id = "sg-35035942" # My default sg
-}
-```
-Configures ssh port for last mile server configuration
+module "vpc" {
+  source = "terraform-aws-modules/vpc/aws"
 
-### EC2 instance 
-```hcl
-resource "aws_instance" "web" {
-  depends_on = [aws_security_group_rule.ssh]
+  name = "valheim"
+  cidr = "10.0.0.0/16"
 
-  ami           = "ami-054a31f1b3bf90920" # ID of Ubuntu 20 SP ami (64-bit|x86)
-  instance_type = "t2.medium" # Minimum size for satisfatory performance and stability
-  key_name      = "valheim"
-  tags = {
-    Name = "Valheim1"
-  }
+  azs            = [local.config_default_az]
+  public_subnets = ["10.0.101.0/24"]
 
-  provisioner "remote-exec" {
-    connection {
-      host        = self.public_ip
-      user        = "ubuntu"
-      private_key = file("~/.ssh/valheim.pem")
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  manage_default_security_group = true
+  default_security_group_ingress = [
+    {
+      protocol    = "-1"
+      from_port   = 0
+      to_port     = 0
+      cidr_blocks = "0.0.0.0/0"
     }
-    inline = ["echo 'Instance ${self.public_dns} is up!'"]
+  ]
+  default_security_group_egress = [
+    {
+      protocol    = "-1"
+      from_port   = 0
+      to_port     = 0
+      cidr_blocks = "0.0.0.0/0"
+    }
+  ]
+
+  tags = {
+    Terraform = "true"
   }
 }
 ```
-Configures EC2 instance that will host Valheim server. Somethings to notice:
-* ami attribute: This Id is for the ubuntu 20.04 image on sa-east-1 region. Each region has it's on AMI Id's
-* instance_type attribute: I Tried to host with t2.micro, no chance. t2.small was able to start a fresh server but once I uploaded my own it couldn't load everything up. t2.medium ran my server with 3 players for a couple of hours without any hickups and stable cpu usage at around 20%.
-* provisioner block: since we will be doing last mile configurations sshing to the newly created instance we need a way to know that the instance is ready to receive the connection. With this provisioner block the aws_instance resource will only be considered created once the remote connection is successful.
+With this `vpc` module I'm creating a public subnet and, since I need to communicate with Steam and other players, rules that allow on traffic from any protocol.
+In a more meaningfull project you should create only the necessary inbound and outbound rules with specific protocols.
+
+### The locals 
+```hcl
+resource "random_string" "valheim_pwd" {
+  length  = 6
+  numeric = true
+  special = false
+}
+
+locals {
+  access_points = {
+    "efs-valheim-saves" = {
+      container_path = "/home/steam/.config/unity3d/IronGate/Valheim"
+      efs_path       = "/valheim/saves"
+    }
+    "efs-valheim-server" = {
+      container_path = "/home/steam/valheim"
+      efs_path       = "/valheim/server"
+    }
+    "efs-valheim-backups" = {
+      container_path = "/home/steam/backups"
+      efs_path       = "/valheim/backups"
+    }
+  }
+  ecs_task_mount_points = jsonencode([
+    for k, v in local.access_points : {
+      "sourceVolume" : "${k}"
+      "containerPath" : "${v.container_path}"
+    }
+  ])
+  ecs_task_container_definition = templatefile("valheim-task-container-definition.tfpl", {
+    aws_region   = data.aws_region.current.name
+    mount_points = local.ecs_task_mount_points
+    server_name  = "Psicolandia2"
+    word_name    = "Psicolandia2"
+    password     = random_string.valheim_pwd.result
+    timezone     = "America/Sao_paulo"
+  })
+}
+```
+Here I create a random password that will used in the valheim server (I use `random_string` so I can output it in plain text, again, on a more meaningful project, protect your credentials acordingly).
+The `locals` block are the variables that will be used to render the ECS task container definition
+
+### The data layer
 
 ```hcl
-resource "null_resource" "valheim_deploy" {
-  triggers = {
-    ec2_id   = aws_instance.web.id
+resource "aws_efs_file_system" "valheim" {
+  availability_zone_name = local.config_default_az
+
+  tags = {
+    Name = "valheim-efs"
+  }
+}
+
+resource "aws_efs_mount_target" "valheim" {
+  security_groups = [module.vpc.default_security_group_id]
+  file_system_id  = aws_efs_file_system.valheim.id
+  subnet_id       = module.vpc.public_subnets[0]
+}
+
+resource "aws_efs_access_point" "valheim" {
+  for_each = local.access_points
+
+  file_system_id = aws_efs_file_system.valheim.id
+  root_directory {
+    path = each.value.efs_path
+    creation_info {
+      owner_gid   = 0
+      owner_uid   = 0
+      permissions = 0777
+    }
+  }
+}
+```
+In this block I define the EFS, it's mount target, and it's access points. the latter with a `foreach` accordingly to what was defined in `locals`.
+The EFS will be used to store data from the Valheim containers.
+
+### The ECS
+#### cluster
+```hcl
+module "ecs" {
+  source = "terraform-aws-modules/ecs/aws"
+
+  cluster_name = "valheim"
+
+  fargate_capacity_providers = {
+    FARGATE_SPOT = {
+      default_capacity_provider_strategy = {
+        weight = 100
+      }
+    }
   }
 
-  connection {
-    host        = aws_instance.web.public_ip
-    user        = "ubuntu"
-    private_key = file("~/.ssh/valheim.pem")
+  tags = {
+    Environment = "prd"
+    Project     = "valheim-server"
   }
+}
+```
+I use the module to configure an ECS cluster with a strategy of 100% `FARGATE_SPOT` capacity provider to decrease costs. Since my data is safe on an EFS and it's just a game, I can afford to use 100% spot capacity provider.
 
-  provisioner "file" {
-    source      = "deploy/"
-    destination = "~"
+#### service and task
+```hcl
+resource "aws_ecs_service" "valheim" {
+  name             = "valheim"
+  cluster          = module.ecs.cluster_id
+  task_definition  = aws_ecs_task_definition.valheim.arn
+  desired_count    = 1
+  launch_type      = "FARGATE"
+  platform_version = "1.4.0" //not specfying this version explictly will not currently work for mounting EFS to Fargate
+
+  network_configuration {
+    security_groups  = [module.vpc.default_security_group_id]
+    subnets          = [module.vpc.public_subnets[0]]
+    assign_public_ip = true
   }
+}
 
-  provisioner "remote-exec" {
-    inline = [
-      "chmod +x ~/deploy-valheim.sh && ~/deploy-valheim.sh",
+resource "aws_ecs_task_definition" "valheim" {
+  family                   = "valheim"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "2048"
+  memory                   = "4096"
+  network_mode             = "awsvpc"
+  execution_role_arn       = aws_iam_role.valheim_task.arn
+
+  container_definitions = local.ecs_task_container_definition
+
+  dynamic "volume" {
+    for_each = aws_efs_access_point.valheim
+    content {
+      name = volume.key
+      efs_volume_configuration {
+        file_system_id     = aws_efs_file_system.valheim.id
+        root_directory     = "/"
+        transit_encryption = "ENABLED"
+        authorization_config {
+          access_point_id = volume.value.id
+        }
+      }
+    }
+  }
+}
+```
+I'm using a 2 CPU, 4GB Memory task here, and it held up really well with 3 players and no buildings. One advantage of using and ECS task with the Fargate approach and persisting data elsewhere is that I can easily experiment with resources to optimize costs. 
+The container definition is being rendered in `locals` from [`valheim-task-container-definition.tfpl`](./valheim-task-container-definition.tfpl) file.
+
+### The role
+```hcl
+resource "aws_iam_role" "valheim_task" {
+  name = "valheim_ecs_task"
+
+  assume_role_policy = jsonencode({
+    "Version" : "2012-10-17",
+    "Statement" : [
+      {
+        "Sid" : "",
+        "Effect" : "Allow",
+        "Principal" : {
+          "Service" : [
+            "ecs-tasks.amazonaws.com"
+          ]
+        },
+        "Action" : "sts:AssumeRole"
+      }
     ]
-  }
+  })
+}
+
+data "aws_iam_policy" "ecs_task" {
+  name = "AmazonECSTaskExecutionRolePolicy"
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_task" {
+  role       = aws_iam_role.valheim_task.name
+  policy_arn = data.aws_iam_policy.ecs_task.arn
+}
+
+data "aws_iam_policy" "cloudwatch" {
+  name = "CloudWatchLogsFullAccess"
+}
+
+resource "aws_iam_role_policy_attachment" "cloudwatch_ecs" {
+  role       = aws_iam_role.valheim_task.name
+  policy_arn = data.aws_iam_policy.cloudwatch.arn
 }
 ```
-This block is the last mile setup for the server.  
-The [``deploy-valheim.sh``](deploy/deploy-valheim.sh) script is responsible for installing Docker and Docker Compose and initiating the server with ``sudo docker-compose up -d`` command. It also configures the crontab to run the Docker Compose command on reboot.  
-The [``docker-compose.yml``](deploy/docker-compose.yml) is a copy paste from [this](https://updateloop.dev/dedicated-valheim-lightsail/) tutorial and there is a lot more info in the [image repo on Github](https://github.com/mbround18/valheim-docker).
+Here I define the ECS task role so it can create log group and send the logs to AWS Cloudwatch.
 
-### Github Action secrets
-```hcl
-resource "github_actions_secret" "aws_access_key" {
-  repository      = "valheim-server"
-  secret_name     = "AWS_ACCESS_KEY_ID"
-  plaintext_value = var.aws_access_key_id
-}
+### The Conclusion
+Overall, this project on AWS using ECS and EFS was a valuable learning experience. By using ECS, we were able to easily deploy and manage the Valheim server, and by using EFS, we were able to ensure data resiliency. EFS allowed us to store our data in a central location always available to Valheim ECS task, which helped us to avoid data loss. In addition, we were able to take advantage of the Fargate launch type to simplify our infrastructure and save on costs. Overall, this project has demonstrated the power and potential of AWS for containerized applications.
 
-resource "github_actions_secret" "aws_secret_key" {
-  repository      = "valheim-server"
-  secret_name     = "AWS_SECRET_ACCESS_KEY"
-  plaintext_value = var.aws_secret_access_key
-}
-
-resource "github_actions_secret" "aws_ec2_instance_id" {
-  repository      = "valheim-server"
-  secret_name     = "instance_id"
-  plaintext_value = aws_instance.web.id
-}
-```
-This secrets are used in the workflow to stop and start the server.
-
-### The workflows
-Since the server I was creating was not intended to be a public 24/7 server, the solution I came up with was to use Github Actions to start/stop the instance, keeping AWS costs as low as possible. This is all they do. The [``start-server.yml``](.github/workflows/start-server.yml) is intended to be manually triggered by the first person who needs the server. The [``stop-server.yml``](.github/workflows/stop-server.yml) can also be manually triggered but is also scheduled to run everyday at 3 AM (UTC - 3) in case someone forgets to shut the server down.
-
-### Disclaimers
-* The EC2 instance holds the state of your world, so if you delete it, you will lose your world if it's not backed up somewhere outside the instance. This repo does not cover this part yet. A possibility would be mouting an S3 bucket in the container worlds folder through s3fs volume plugin like [REX-Ray](https://github.com/rexray/rexray).
-* This was done in a day out of curiosity, so there are probably much better ways to run, both more robust and cheaper, Valheim servers.
-
-
+OBS: This conclusion was generated by GPT Chat but greately summerized what this project was :)
 
