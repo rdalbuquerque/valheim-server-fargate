@@ -1,4 +1,6 @@
 .terraform
+.infracost
+terraform*
 state
 *.db
 *.fwl

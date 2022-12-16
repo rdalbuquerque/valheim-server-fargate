@@ -5,8 +5,7 @@ terraform {
 
   required_providers {
     aws = {
-      source  = "hashicorp/aws"
-      version = "~> 3.0"
+      source = "hashicorp/aws"
     }
   }
 }
@@ -15,95 +14,225 @@ terraform {
 # Credentials and default region are set on envrionment variables
 provider "aws" {}
 
-provider "github" {}
+data "aws_region" "current" {}
 
-variable "aws_access_key_id" {
-  type = string
+locals {
+  config_default_az = "us-east-1a"
 }
 
-variable "aws_secret_access_key" {
-  type      = string
-  sensitive = true
-}
+module "vpc" {
+  source = "terraform-aws-modules/vpc/aws"
 
-resource "aws_security_group_rule" "valheim" {
-  type              = "ingress"
-  from_port         = 2456 # Port range for Valheim
-  to_port           = 2458
-  protocol          = "udp"
-  cidr_blocks       = ["0.0.0.0/0"]
-  ipv6_cidr_blocks  = []
-  security_group_id = "sg-35035942" # My default sg
-}
+  name = "valheim"
+  cidr = "10.0.0.0/16"
 
-resource "aws_security_group_rule" "ssh" {
-  type              = "ingress"
-  from_port         = 22
-  to_port           = 22
-  protocol          = "tcp"
-  cidr_blocks       = ["0.0.0.0/0"] # Ideally the server admin ip or ip range
-  ipv6_cidr_blocks  = []
-  security_group_id = "sg-35035942" # My default sg
-}
+  azs            = [local.config_default_az]
+  public_subnets = ["10.0.101.0/24"]
 
-resource "aws_instance" "web" {
-  depends_on = [aws_security_group_rule.ssh]
+  enable_dns_hostnames = true
+  enable_dns_support   = true
 
-  ami           = "ami-054a31f1b3bf90920" # ID of Ubuntu 20 SP ami (64-bit|x86)
-  instance_type = "t2.medium" # Minimum size for satisfatory performance and stability
-  key_name      = "valheim"
-  tags = {
-    Name = "Valheim1"
-  }
-
-  provisioner "remote-exec" {
-    connection {
-      host        = self.public_ip
-      user        = "ubuntu"
-      private_key = file("~/.ssh/valheim.pem")
+  manage_default_security_group = true
+  default_security_group_ingress = [
+    {
+      protocol    = "-1"
+      from_port   = 0
+      to_port     = 0
+      cidr_blocks = "0.0.0.0/0"
     }
-    inline = ["echo 'Instance ${self.public_dns} is up!'"]
+  ]
+  default_security_group_egress = [
+    {
+      protocol    = "-1"
+      from_port   = 0
+      to_port     = 0
+      cidr_blocks = "0.0.0.0/0"
+    }
+  ]
+
+  tags = {
+    Terraform = "true"
   }
 }
 
-resource "null_resource" "valheim_deploy" {
-  triggers = {
-    ec2_id   = aws_instance.web.id
-    ec2_size = aws_instance.web.instance_type 
+resource "random_string" "valheim_pwd" {
+  length  = 6
+  numeric = true
+  special = false
+}
+
+locals {
+  access_points = {
+    "efs-valheim-saves" = {
+      container_path = "/home/steam/.config/unity3d/IronGate/Valheim"
+      efs_path       = "/valheim/saves"
+    }
+    "efs-valheim-server" = {
+      container_path = "/home/steam/valheim"
+      efs_path       = "/valheim/server"
+    }
+    "efs-valheim-backups" = {
+      container_path = "/home/steam/backups"
+      efs_path       = "/valheim/backups"
+    }
+  }
+  ecs_task_mount_points = jsonencode([
+    for k, v in local.access_points : {
+      "sourceVolume" : "${k}"
+      "containerPath" : "${v.container_path}"
+    }
+  ])
+  ecs_task_container_definition = templatefile("valheim-task-container-definition.tfpl", {
+    aws_region   = data.aws_region.current.name
+    mount_points = local.ecs_task_mount_points
+    server_name  = "Psicolandia2"
+    word_name    = "Psicolandia2"
+    password     = random_string.valheim_pwd.result
+    timezone     = "America/Sao_paulo"
+  })
+}
+
+resource "aws_efs_file_system" "valheim" {
+  availability_zone_name = local.config_default_az
+
+  tags = {
+    Name = "valheim-efs"
+  }
+}
+
+resource "aws_efs_mount_target" "valheim" {
+  security_groups = [module.vpc.default_security_group_id]
+  file_system_id  = aws_efs_file_system.valheim.id
+  subnet_id       = module.vpc.public_subnets[0]
+}
+
+resource "aws_efs_access_point" "valheim" {
+  for_each = local.access_points
+
+  file_system_id = aws_efs_file_system.valheim.id
+  root_directory {
+    path = each.value.efs_path
+    creation_info {
+      owner_gid   = 0
+      owner_uid   = 0
+      permissions = 0777
+    }
+  }
+}
+
+module "ecs" {
+  source = "terraform-aws-modules/ecs/aws"
+
+  cluster_name = "valheim"
+
+  fargate_capacity_providers = {
+    FARGATE_SPOT = {
+      default_capacity_provider_strategy = {
+        weight = 100
+      }
+    }
   }
 
-  connection {
-    host        = aws_instance.web.public_ip
-    user        = "ubuntu"
-    private_key = file("~/.ssh/valheim.pem")
+  tags = {
+    Environment = "prd"
+    Project     = "valheim-server"
   }
+}
 
-  provisioner "file" {
-    source      = "deploy/"
-    destination = "~"
+resource "aws_ecs_service" "valheim" {
+  name             = "valheim"
+  cluster          = module.ecs.cluster_id
+  task_definition  = aws_ecs_task_definition.valheim.arn
+  desired_count    = 0
+  launch_type      = "FARGATE"
+  platform_version = "1.4.0" //not specfying this version explictly will not currently work for mounting EFS to Fargate
+
+  network_configuration {
+    security_groups  = [module.vpc.default_security_group_id]
+    subnets          = [module.vpc.public_subnets[0]]
+    assign_public_ip = true
   }
+}
 
-  provisioner "remote-exec" {
-    inline = [
-      "chmod +x ~/deploy-valheim.sh && ~/deploy-valheim.sh",
+resource "aws_ecs_task_definition" "valheim" {
+  family                   = "valheim"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "2048"
+  memory                   = "4096"
+  network_mode             = "awsvpc"
+  execution_role_arn       = aws_iam_role.valheim_task.arn
+
+  container_definitions = local.ecs_task_container_definition
+
+  dynamic "volume" {
+    for_each = aws_efs_access_point.valheim
+    content {
+      name = volume.key
+      efs_volume_configuration {
+        file_system_id     = aws_efs_file_system.valheim.id
+        root_directory     = "/"
+        transit_encryption = "ENABLED"
+        authorization_config {
+          access_point_id = volume.value.id
+        }
+      }
+    }
+  }
+}
+
+resource "aws_iam_role" "valheim_task" {
+  name = "valheim_ecs_task"
+
+  assume_role_policy = jsonencode({
+    "Version" : "2012-10-17",
+    "Statement" : [
+      {
+        "Sid" : "",
+        "Effect" : "Allow",
+        "Principal" : {
+          "Service" : [
+            "ecs-tasks.amazonaws.com"
+          ]
+        },
+        "Action" : "sts:AssumeRole"
+      }
     ]
-  }
+  })
 }
 
-resource "github_actions_secret" "aws_access_key" {
-  repository      = "valheim-server"
-  secret_name     = "AWS_ACCESS_KEY_ID"
-  plaintext_value = var.aws_access_key_id
+data "aws_iam_policy" "ecs_task" {
+  name = "AmazonECSTaskExecutionRolePolicy"
 }
 
-resource "github_actions_secret" "aws_secret_key" {
-  repository      = "valheim-server"
-  secret_name     = "AWS_SECRET_ACCESS_KEY"
-  plaintext_value = var.aws_secret_access_key
+resource "aws_iam_role_policy_attachment" "ecs_task" {
+  role       = aws_iam_role.valheim_task.name
+  policy_arn = data.aws_iam_policy.ecs_task.arn
 }
 
-resource "github_actions_secret" "aws_ec2_instance_id" {
-  repository      = "valheim-server"
-  secret_name     = "instance_id"
-  plaintext_value = aws_instance.web.id
+data "aws_iam_policy" "cloudwatch" {
+  name = "CloudWatchLogsFullAccess"
+}
+
+resource "aws_iam_role_policy_attachment" "cloudwatch_ecs" {
+  role       = aws_iam_role.valheim_task.name
+  policy_arn = data.aws_iam_policy.cloudwatch.arn
+}
+
+#resource "aws_instance" "efs_viewer" {
+#  ami           = "ami-0574da719dca65348" # ID of Ubuntu 20 SP ami (64-bit|x86)
+#  instance_type = "t2.micro"
+#  key_name      = "valheim-us"
+#  subnet_id     = module.vpc.public_subnets[0]
+#  
+#  tags = {
+#    Name = "efs-viewer"
+#  }
+#}
+#
+#output "efs_viewer_ip" {
+#  value = aws_instance.efs_viewer.public_ip
+#}
+
+output "valheim_password" {
+  value = random_string.valheim_pwd.result
 }

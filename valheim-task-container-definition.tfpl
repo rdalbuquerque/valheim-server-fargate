@@ -1,0 +1,47 @@
+[
+  {
+      "logConfiguration": {
+          "logDriver": "awslogs",
+          "options": {
+              "awslogs-group": "valheim-container",
+              "awslogs-region": "${aws_region}",
+              "awslogs-create-group": "true",
+              "awslogs-stream-prefix": "valheim"
+          }
+      },
+      "portMappings": [
+          {
+              "hostPort": 2456,
+              "containerPort": 2456,
+              "protocol": "udp"
+          },
+          {
+              "hostPort": 2457,
+              "containerPort": 2457,
+              "protocol": "udp"
+          },
+          {
+              "hostPort": 2458,
+              "containerPort": 2458,
+              "protocol": "udp"
+          }
+      ],
+      "essential": true,
+      "mountPoints": ${mount_points},
+      "name": "valheim-latest",
+      "image": "mbround18/valheim:latest",
+      "environment": [
+        {"name": "PORT", "value": "2456"},
+        {"name": "NAME", "value": "${server_name}"},
+        {"name": "WORLD", "value": "${word_name}"},
+        {"name": "PASSWORD", "value": "${password}"},
+        {"name": "TZ", "value": "${timezone}"},
+        {"name": "AUTO_UPDATE", "value": "1"},
+        {"name": "AUTO_UPDATE_SCHEDULE", "value": "0 1 * * *"},
+        {"name": "AUTO_BACKUP", "value": "1"},
+        {"name": "AUTO_BACKUP_SCHEDULE", "value": "*/15 * * * *"},
+        {"name": "AUTO_BACKUP_REMOVE_OLD", "value": "1"},
+        {"name": "AUTO_BACKUP_DAYS_TO_LIVE", "value": "3"}
+      ]
+  }
+]
