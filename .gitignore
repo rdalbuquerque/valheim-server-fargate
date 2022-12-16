@@ -3,3 +3,4 @@ state
 *.db
 *.fwl
 *.pem
+.infracost
