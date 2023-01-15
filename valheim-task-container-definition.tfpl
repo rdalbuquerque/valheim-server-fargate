@@ -36,9 +36,8 @@
         {"name": "WORLD", "value": "${word_name}"},
         {"name": "PASSWORD", "value": "${password}"},
         {"name": "TZ", "value": "${timezone}"},
-        {"name": "AUTO_UPDATE", "value": "1"},
-        {"name": "AUTO_UPDATE_SCHEDULE", "value": "0 1 * * *"},
-        {"name": "AUTO_BACKUP", "value": "1"},
+        {"name": "AUTO_UPDATE", "value": "0"},
+        {"name": "AUTO_BACKUP", "value": "0"},
         {"name": "AUTO_BACKUP_SCHEDULE", "value": "*/15 * * * *"},
         {"name": "AUTO_BACKUP_REMOVE_OLD", "value": "1"},
         {"name": "AUTO_BACKUP_DAYS_TO_LIVE", "value": "3"}

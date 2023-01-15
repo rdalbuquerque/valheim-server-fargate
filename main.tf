@@ -17,7 +17,7 @@ provider "aws" {}
 data "aws_region" "current" {}
 
 locals {
-  config_default_az = "us-east-1a"
+  config_default_az = "sa-east-1a"
 }
 
 module "vpc" {
@@ -55,193 +55,206 @@ module "vpc" {
   }
 }
 
-resource "random_string" "valheim_pwd" {
-  length  = 6
-  numeric = true
-  special = false
-}
+data "aws_ami" "aws_optimized_ecs" {
+  most_recent = true
 
-locals {
-  access_points = {
-    "efs-valheim-saves" = {
-      container_path = "/home/steam/.config/unity3d/IronGate/Valheim"
-      efs_path       = "/valheim/saves"
-    }
-    "efs-valheim-server" = {
-      container_path = "/home/steam/valheim"
-      efs_path       = "/valheim/server"
-    }
-    "efs-valheim-backups" = {
-      container_path = "/home/steam/backups"
-      efs_path       = "/valheim/backups"
-    }
-  }
-  ecs_task_mount_points = jsonencode([
-    for k, v in local.access_points : {
-      "sourceVolume" : "${k}"
-      "containerPath" : "${v.container_path}"
-    }
-  ])
-  ecs_task_container_definition = templatefile("valheim-task-container-definition.tfpl", {
-    aws_region   = data.aws_region.current.name
-    mount_points = local.ecs_task_mount_points
-    server_name  = "Psicolandia2"
-    word_name    = "Psicolandia2"
-    password     = random_string.valheim_pwd.result
-    timezone     = "America/Sao_paulo"
-  })
-}
-
-resource "aws_efs_file_system" "valheim" {
-  availability_zone_name = local.config_default_az
-
-  tags = {
-    Name = "valheim-efs"
-  }
-}
-
-resource "aws_efs_mount_target" "valheim" {
-  security_groups = [module.vpc.default_security_group_id]
-  file_system_id  = aws_efs_file_system.valheim.id
-  subnet_id       = module.vpc.public_subnets[0]
-}
-
-resource "aws_efs_access_point" "valheim" {
-  for_each = local.access_points
-
-  file_system_id = aws_efs_file_system.valheim.id
-  root_directory {
-    path = each.value.efs_path
-    creation_info {
-      owner_gid   = 0
-      owner_uid   = 0
-      permissions = 0777
-    }
-  }
-}
-
-module "ecs" {
-  source = "terraform-aws-modules/ecs/aws"
-
-  cluster_name = "valheim"
-
-  fargate_capacity_providers = {
-    FARGATE = {
-      default_capacity_provider_strategy = {
-        weight = 1
-      }
-    }
-    FARGATE_SPOT = {
-      default_capacity_provider_strategy = {
-        weight = 100
-      }
-    }
+  filter {
+    name   = "name"
+    values = ["amzn-ami*amazon-ecs-optimized"]
   }
 
-  tags = {
-    Environment = "prd"
-    Project     = "valheim-server"
+  filter {
+    name   = "architecture"
+    values = ["x86_64"]
   }
-}
 
-resource "aws_ecs_service" "valheim" {
-  name             = "valheim"
-  cluster          = module.ecs.cluster_id
-  task_definition  = aws_ecs_task_definition.valheim.arn
-  desired_count    = 0
-  capacity_provider_strategy {
-    capacity_provider = "FARGATE_SPOT"
-    weight            = 100
-    base              = 1
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
   }
-  platform_version = "1.4.0" //not specfying this version explictly will not currently work for mounting EFS to Fargate
 
-  network_configuration {
-    security_groups  = [module.vpc.default_security_group_id]
-    subnets          = [module.vpc.public_subnets[0]]
-    assign_public_ip = true
+  owners = ["591542846629"] # AWS
+}
+
+resource "aws_launch_template" "valheim_ec2" {
+  name_prefix   = "example"
+  image_id      = data.aws_ami.aws_optimized_ecs.id
+  instance_type = "c7g.medium"
+  key_name      = "valheim-sa"
+  network_interfaces {
+    associate_public_ip_address = true
+    subnet_id                   = module.vpc.public_subnets[0]
   }
-}
-
-resource "aws_ecs_task_definition" "valheim" {
-  family                   = "valheim"
-  requires_compatibilities = ["FARGATE"]
-  cpu                      = "512"
-  memory                   = "4096"
-  network_mode             = "awsvpc"
-  execution_role_arn       = aws_iam_role.valheim_task.arn
-
-  container_definitions = local.ecs_task_container_definition
-
-  dynamic "volume" {
-    for_each = aws_efs_access_point.valheim
-    content {
-      name = volume.key
-      efs_volume_configuration {
-        file_system_id     = aws_efs_file_system.valheim.id
-        root_directory     = "/"
-        transit_encryption = "ENABLED"
-        authorization_config {
-          access_point_id = volume.value.id
-        }
-      }
-    }
+  placement {
+    availability_zone = local.config_default_az
   }
+  monitoring {
+    enabled = true
+  }
+  iam_instance_profile {
+    name = aws_iam_instance_profile.ecs_agent.arn
+  }
+  instance_market_options {
+    market_type = "spot"
+  }
+  user_data = <<EOF
+#!/bin/bash
+echo ECS_CLUSTER=valheim-ec2-cluster >> /etc/ecs/ecs.config
+EOF
 }
 
-resource "aws_iam_role" "valheim_task" {
-  name = "valheim_ecs_task"
+resource "aws_autoscaling_group" "valheim" {
+  name                = "valheim-ec2-cluster"
+  vpc_zone_identifier = [module.vpc.public_subnets[0]]
+  launch_template {
+    id = aws_launch_template.valheim_ec2.id
+  }
 
-  assume_role_policy = jsonencode({
-    "Version" : "2012-10-17",
-    "Statement" : [
-      {
-        "Sid" : "",
-        "Effect" : "Allow",
-        "Principal" : {
-          "Service" : [
-            "ecs-tasks.amazonaws.com"
-          ]
-        },
-        "Action" : "sts:AssumeRole"
-      }
-    ]
-  })
+  desired_capacity          = 1
+  min_size                  = 1
+  max_size                  = 1
+  health_check_grace_period = 300
+  health_check_type         = "EC2"
 }
 
-data "aws_iam_policy" "ecs_task" {
-  name = "AmazonECSTaskExecutionRolePolicy"
+resource "aws_ecs_cluster" "valheim_ec2_cluster" {
+  name = "valheim-ec2-cluster"
 }
 
-resource "aws_iam_role_policy_attachment" "ecs_task" {
-  role       = aws_iam_role.valheim_task.name
-  policy_arn = data.aws_iam_policy.ecs_task.arn
-}
-
-data "aws_iam_policy" "cloudwatch" {
-  name = "CloudWatchLogsFullAccess"
-}
-
-resource "aws_iam_role_policy_attachment" "cloudwatch_ecs" {
-  role       = aws_iam_role.valheim_task.name
-  policy_arn = data.aws_iam_policy.cloudwatch.arn
-}
-
-#resource "aws_instance" "efs_viewer" {
-#  ami           = "ami-0574da719dca65348" # ID of Ubuntu 20 SP ami (64-bit|x86)
-#  instance_type = "t2.micro"
-#  key_name      = "valheim-us"
-#  subnet_id     = module.vpc.public_subnets[0]
-#  
-#  tags = {
-#    Name = "efs-viewer"
+#resource "random_string" "valheim_pwd" {
+#  length  = 6
+#  numeric = true
+#  special = false
+#}
+#
+#locals {
+#  access_points = {
+#    "efs-valheim-saves" = {
+#      container_path = "/home/steam/.config/unity3d/IronGate/Valheim"
+#      efs_path       = "/valheim/saves"
+#    }
+#    "efs-valheim-server" = {
+#      container_path = "/home/steam/valheim"
+#      efs_path       = "/valheim/server"
+#    }
+#    "efs-valheim-backups" = {
+#      container_path = "/home/steam/backups"
+#      efs_path       = "/valheim/backups"
+#    }
+#  }
+#  ecs_task_mount_points = jsonencode([
+#    for k, v in local.access_points : {
+#      "sourceVolume" : "${k}"
+#      "containerPath" : "${v.container_path}"
+#    }
+#  ])
+#  ecs_task_container_definition = templatefile("valheim-task-container-definition.tfpl", {
+#    aws_region   = data.aws_region.current.name
+#    mount_points = local.ecs_task_mount_points
+#    server_name  = "cheapear-and-faster-platworld"
+#    word_name    = "cheapear-and-faster-platworld"
+#    password     = random_string.valheim_pwd.result
+#    timezone     = "America/Sao_paulo"
+#  })
+#}
+#
+#resource "aws_ecs_service" "valheim_ec2_cluster" {
+#  name            = "valheim"
+#  cluster         = aws_ecs_cluster.valheim_ec2_cluster
+#  task_definition = aws_ecs_task_definition.valheim.arn
+#  desired_count   = 1
+#
+#  network_configuration {
+#    security_groups  = [module.vpc.default_security_group_id]
+#    subnets          = [module.vpc.public_subnets[0]]
+#    assign_public_ip = true
 #  }
 #}
 #
-#output "efs_viewer_ip" {
-#  value = aws_instance.efs_viewer.public_ip
+#data "aws_iam_role" "valheim_task" {
+#  name = "valheim_ecs_task"
+#}
+#
+#resource "aws_ecs_task_definition" "valheim" {
+#  family             = "valheim"
+#  cpu                = "2048"
+#  memory             = "4096"
+#  network_mode       = "awsvpc"
+#  execution_role_arn = data.aws_iam_role.valheim_task.arn
+#
+#  container_definitions = local.ecs_task_container_definition
+#
+#  dynamic "volume" {
+#    for_each = aws_efs_access_point.valheim
+#    content {
+#      name = volume.key
+#      efs_volume_configuration {
+#        file_system_id     = aws_efs_file_system.valheim.id
+#        root_directory     = "/"
+#        transit_encryption = "ENABLED"
+#        authorization_config {
+#          access_point_id = volume.value.id
+#        }
+#      }
+#    }
+#  }
 #}
 
-output "valheim_password" {
-  value = random_string.valheim_pwd.result
-}
+
+#resource "aws_efs_file_system" "valheim" {
+#  availability_zone_name = local.config_default_az
+#
+#  tags = {
+#    Name = "valheim-efs"
+#  }
+#}
+#
+#resource "aws_efs_mount_target" "valheim" {
+#  security_groups = [module.vpc.default_security_group_id]
+#  file_system_id  = aws_efs_file_system.valheim.id
+#  subnet_id       = module.vpc.public_subnets[0]
+#}
+#
+#resource "aws_efs_access_point" "valheim" {
+#  for_each = local.access_points
+#
+#  file_system_id = aws_efs_file_system.valheim.id
+#  root_directory {
+#    path = each.value.efs_path
+#    creation_info {
+#      owner_gid   = 0
+#      owner_uid   = 0
+#      permissions = 0777
+#    }
+#  }
+#}
+#
+#module "ecs" {
+#  source = "terraform-aws-modules/ecs/aws"
+#  cluster_name = "valheim"
+#
+#  tags = {
+#    Environment = "prd"
+#    Project     = "valheim-server"
+#  }
+#}
+#
+#
+##resource "aws_instance" "efs_viewer" {
+##  ami           = "ami-0b22b708611ed2690" # ID of Ubuntu 20 SP ami (64-bit|x86)
+##  instance_type = "t2.micro"
+##  key_name      = "valheim-sa"
+##  subnet_id     = module.vpc.public_subnets[0]
+##  
+##  tags = {
+##    Name = "efs-viewer"
+##  }
+##}
+##
+##output "efs_viewer_ip" {
+##  value = aws_instance.efs_viewer.public_ip
+##}
+#
+#output "valheim_password" {
+#  value = random_string.valheim_pwd.result
+#}
