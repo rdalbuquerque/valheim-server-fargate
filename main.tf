@@ -82,7 +82,7 @@ locals {
       "containerPath" : "${v.container_path}"
     }
   ])
-  ecs_task_container_definition = templatefile("valheim-task-container-definition.tfpl", {
+  ecs_task_container_definition = templatefile("valheim-task-container-definition.tftpl", {
     aws_region   = data.aws_region.current.name
     mount_points = local.ecs_task_mount_points
     server_name  = var.server_name

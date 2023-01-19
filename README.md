@@ -104,7 +104,7 @@ locals {
       "containerPath" : "${v.container_path}"
     }
   ])
-  ecs_task_container_definition = templatefile("valheim-task-container-definition.tfpl", {
+  ecs_task_container_definition = templatefile("valheim-task-container-definition.tftpl", {
     aws_region   = data.aws_region.current.name
     mount_points = local.ecs_task_mount_points
     server_name  = "Psicolandia2"
@@ -222,7 +222,7 @@ resource "aws_ecs_task_definition" "valheim" {
 }
 ```
 I'm using a 2 CPU, 4GB Memory task here, and it held up really well with 3 players and no buildings. One advantage of using and ECS task with the Fargate approach and persisting data elsewhere is that I can easily experiment with resources to optimize costs. 
-The container definition is being rendered in `locals` from [`valheim-task-container-definition.tfpl`](./valheim-task-container-definition.tfpl) file.
+The container definition is being rendered in `locals` from [`valheim-task-container-definition.tftpl`](./valheim-task-container-definition.tftpl) file.
 
 ### Task role
 ```hcl
