@@ -86,7 +86,7 @@ locals {
     aws_region   = data.aws_region.current.name
     mount_points = local.ecs_task_mount_points
     server_name  = var.server_name
-    word_name    = var.world_name
+    world_name   = var.world_name
     password     = random_string.valheim_pwd.result
     timezone     = var.timezone
   })

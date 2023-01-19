@@ -33,7 +33,7 @@
       "environment": [
         {"name": "PORT", "value": "2456"},
         {"name": "NAME", "value": "${server_name}"},
-        {"name": "WORLD", "value": "${word_name}"},
+        {"name": "WORLD", "value": "${world_name}"},
         {"name": "PASSWORD", "value": "${password}"},
         {"name": "TZ", "value": "${timezone}"},
         {"name": "AUTO_UPDATE", "value": "1"},
