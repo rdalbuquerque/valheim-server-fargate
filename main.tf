@@ -149,12 +149,12 @@ resource "aws_ecs_service" "valheim" {
   cluster          = module.ecs.cluster_id
   task_definition  = aws_ecs_task_definition.valheim.arn
   desired_count    = 0
+  platform_version = "1.4.0" //not specfying this version explictly will not currently work for mounting EFS to Fargate
   capacity_provider_strategy {
     capacity_provider = "FARGATE_SPOT"
     weight            = 100
     base              = 1
   }
-  platform_version = "1.4.0" //not specfying this version explictly will not currently work for mounting EFS to Fargate
 
   network_configuration {
     security_groups  = [module.vpc.default_security_group_id]
