@@ -85,10 +85,10 @@ locals {
   ecs_task_container_definition = templatefile("valheim-task-container-definition.tfpl", {
     aws_region   = data.aws_region.current.name
     mount_points = local.ecs_task_mount_points
-    server_name  = "Psicolandia2"
-    word_name    = "Psicolandia2"
+    server_name  = var.server_name
+    word_name    = var.world_name
     password     = random_string.valheim_pwd.result
-    timezone     = "America/Sao_paulo"
+    timezone     = var.timezone
   })
 }
 
