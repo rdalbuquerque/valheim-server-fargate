@@ -15,7 +15,7 @@
     - [Conclusion](#conclusion)
 
 ### Description
-In this repository, you will find code to set up a Valheim game server using AWS ECS with the Fargate (serverless) capacity provider. If you prefer an alternative to Fargate, check out [this other repository](https://github.com/rdalbuquerque/valheim-server-asg-ec2) that also uses AWS ECS, but with an auto-scaling group (EC2) capacity provider. The latter option may be more performant and cost-effective, as it gives you more flexibility to adjust and fine-tune cluster configurations and use EBS external volumes, while Fargate only allows for the use of EFS. However, the former option is much easier to set up and provides greater freedom to experiment with different CPU/memory configurations.
+In this repository, you will find code to set up a Valheim game server using AWS ECS with the Fargate (serverless) capacity provider. If you prefer an alternative to Fargate, check out [this other repository](https://github.com/rdalbuquerque/valheim-server-asg-ec2) that also uses AWS ECS, but with an auto-scaling group (EC2) capacity provider. The latter option may be more performant and cost-effective, as it gives you more flexibility to adjust and fine-tune cluster configurations and use EBS external volumes, while Fargate only allows for the use of EFS. However, the former option (this repo) is much easier to set up and provides greater freedom to experiment with different CPU/memory configurations.
 
 ### Credits
 This repository is inpired by [this tutorial](https://updateloop.dev/dedicated-valheim-lightsail/) and uses [this image](https://github.com/mbround18/valheim-docker) to host the server with Docker.
